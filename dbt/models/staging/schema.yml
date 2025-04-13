@@ -1,0 +1,10 @@
+version: 2
+
+sources:
+  - name: staging
+    database: "{{ env_var('DBT_DATABASE', 'expanded-bonbon-456014-d9') }}"
+    schema: "{{ env_var('DBT_SCHEMA', 'books') }}"
+
+    tables:
+      - name: books
+      - name: ratings
