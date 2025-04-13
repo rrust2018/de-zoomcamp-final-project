@@ -1,0 +1,107 @@
+id: pipeline
+namespace: de-zoomcamp-final-project
+
+inputs:
+  - id: dataset
+    type: SELECT
+    displayName: Select dataset to upload
+    values: [Books, Ratings, Users]
+    defaults: Books
+
+variables:
+  file: "{{inputs.dataset}}.csv"
+  gcs_file: "gs://{{kv('GCP_BUCKET_NAME')}}/{{vars.file}}"
+  table: "{{kv('GCP_DATASET')}}.{{inputs.dataset | lower}}"
+  data: "{{outputs.extract.outputFiles[inputs.dataset ~ '.csv']}}"
+
+tasks:
+  - id: set_label
+    type: io.kestra.plugin.core.execution.Labels
+    labels:
+      file: "{{render(vars.file)}}"
+      taxi: "{{inputs.dataset}}"
+
+  - id: extract
+    type: io.kestra.plugin.scripts.shell.Commands
+    outputFiles:
+      - "*.csv"
+    taskRunner:
+      type: io.kestra.plugin.core.runner.Process
+    commands:
+      - wget https://raw.githubusercontent.com/rrust2018/de-zoomcamp-final-project/master/data/{{render(vars.file)}} -O {{render(vars.file)}}
+
+  - id: upload_to_gcs
+    type: io.kestra.plugin.gcp.gcs.Upload
+    from: "{{render(vars.data)}}"
+    to: "{{render(vars.gcs_file)}}"
+
+  - id: if_books
+    type: io.kestra.plugin.core.flow.If
+    condition: "{{inputs.dataset == 'Books'}}"
+    then:
+      - id: bq_books_ext
+        type: io.kestra.plugin.gcp.bigquery.Query
+        sql: |
+          create or replace external table `{{kv('GCP_PROJECT_ID')}}.{{render(vars.table)}}_ext`
+          (
+            `ISBN` string,
+            `Book_Title` string,
+            `Book_Author` string,
+            `Year_Of_Publication` string,
+            `Publisher` string
+          )
+          options (
+            format = 'csv',
+            uris = ['{{render(vars.gcs_file)}}'],
+            skip_leading_rows = 1,
+            ignore_unknown_values = true
+          );
+      
+      - id: bq_books_table
+        type: io.kestra.plugin.gcp.bigquery.Query
+        sql: |
+          create or replace table `{{kv('GCP_PROJECT_ID')}}.{{render(vars.table)}}` AS
+          select
+            `ISBN` as isbn,
+            `Book_Title` as title,
+            `Book_Author` as author,
+            safe_cast(`Year_Of_Publication` as int64) as publ_year,
+            `Publisher` as publisher
+          from `{{kv('GCP_PROJECT_ID')}}.{{render(vars.table)}}_ext`
+          where safe_cast(`Year_Of_Publication` as int64) is not null;
+  
+  - id: if_ratings
+    type: io.kestra.plugin.core.flow.If
+    condition: "{{inputs.dataset == 'Ratings'}}"
+    then:
+      - id: bq_ratings_ext
+        type: io.kestra.plugin.gcp.bigquery.Query
+        sql: |
+          create or replace external table `{{kv('GCP_PROJECT_ID')}}.{{render(vars.table)}}_ext`
+          options (
+            format = 'csv',
+            uris = ['{{render(vars.gcs_file)}}'],
+            skip_leading_rows = 1,
+            ignore_unknown_values = true
+          );
+      
+      - id: bq_ratings_table
+        type: io.kestra.plugin.gcp.bigquery.Query
+        sql: |
+          create or replace table `{{kv('GCP_PROJECT_ID')}}.{{render(vars.table)}}` AS
+          select
+            `User_ID` as user_id,
+            `ISBN` as isbn,
+            `Book_Rating` as rating
+          from `{{kv('GCP_PROJECT_ID')}}.{{render(vars.table)}}_ext`;
+
+  - id: purge_files
+    type: io.kestra.plugin.core.storage.PurgeCurrentExecutionFiles
+    disabled: false
+
+pluginDefaults:
+  - type: io.kestra.plugin.gcp
+    values:
+      serviceAccount: "{{kv('GCP_CREDS')}}"
+      projectId: "{{kv('GCP_PROJECT_ID')}}"
+      location: "{{kv('GCP_LOCATION')}}"
